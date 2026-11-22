@@ -2,10 +2,10 @@ pip3 install pyrogram tgcrypto --break-system-packages && python3 << 'EOF'
 import os, time, asyncio, sys
 from pyrogram import Client
 
-API_ID = 23200475
-API_HASH = "644e1d9e8028a5295d6979bb3a36b23b"
-BOT_TOKEN = "8697464413:AAE0xNK4OFrBzzT376sUAcbJI6Y1Ys80y48"
-GROUP_ID = -1003619067047
+API_ID = "API_ID"
+API_HASH = "API_HASH"
+BOT_TOKEN = "BOT_TOKEN"
+GROUP_ID = - ""
 
 def format_size(b):
     return f"{b/(1024*1024):.2f} MB" if b >= 1024*1024 else f"{b/1024:.2f} KB"
