@@ -1,5 +1,5 @@
 # =============================================================================
-# ⚡ FLYTON ANIME PRO BOT — UNIFIED RENDER + VPS EDITION (OWNER + ADMIN FRIENDS)
+# ⚡ FLYTON ANIME PRO BOT — UNIFIED RENDER + VPS EDITION (FULL UPDATED CODE)
 # =============================================================================
 import os
 import re
@@ -30,6 +30,12 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+
+# Python 3.12 / 3.14 Event Loop Fix for Pyrogram
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 from pyrogram import Client, filters, idle
 from pyrogram.enums import ParseMode
@@ -86,7 +92,14 @@ DEFAULT_WEBSITES = {
         "type": "codedew",
     },
     "rareanimes": {
-        "patterns": ["rareanimes.app", "raretoonsindia.me", "raretoonsindia.in", "raretoonsindia.com"],
+        "patterns": [
+            "rareanimes.foo",
+            "rareanimes.app",
+            "rareanimes.me",
+            "raretoonsindia.me",
+            "raretoonsindia.in",
+            "raretoonsindia.com",
+        ],
         "name": "🎭 RareAnimes",
         "type": "rareanimes",
     },
@@ -704,6 +717,7 @@ class Task:
         self.episode_data = None
         self.cancelled = False
         self.active_process = None
+        self.last_error = ""
         os.makedirs(self.directory, exist_ok=True)
 
     def cancel(self):
@@ -965,6 +979,7 @@ async def download_direct_aiohttp(url: str, save_dir: str, task: Task, st: Statu
                             )
                 return save_path if os.path.exists(save_path) and os.path.getsize(save_path) > 1024 else None
     except Exception as e:
+        task.last_error = f"Direct download error: {str(e)[:90]}"
         print(f"[Direct Download Error] {e}")
         return None
 
@@ -972,6 +987,7 @@ async def download_direct_aiohttp(url: str, save_dir: str, task: Task, st: Statu
 async def resolve_gdflix_and_download(gdflix_url: str, task: Task, st: Status):
     soup = await fetch_soup(gdflix_url)
     if not soup:
+        task.last_error = "GDFlix page could not be loaded."
         return None
     links = []
     for a in soup.find_all("a", href=True):
@@ -990,62 +1006,163 @@ async def resolve_gdflix_and_download(gdflix_url: str, task: Task, st: Status):
         res = await download_direct_aiohttp(link, task.directory, task, st)
         if res and os.path.getsize(res) > 5 * 1024 * 1024:
             return res
+    if not task.last_error:
+        task.last_error = "No working mirror found on GDFlix."
     return None
 
 
 async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> list:
     driver, files = None, []
+    task.last_error = ""
     try:
-        driver = await asyncio.to_thread(get_driver)
-        await asyncio.to_thread(driver.get, swift_url)
-        await asyncio.sleep(6)
+        try:
+            driver = await asyncio.to_thread(get_driver)
+        except Exception as drv_err:
+            task.last_error = f"Chrome/Chromium missing or crashed: {str(drv_err)[:100]}"
+            print(f"[Driver Error] {drv_err}")
+            return []
 
+        await asyncio.to_thread(driver.get, swift_url)
+        await asyncio.sleep(7)
+
+        # Follow codedew mainActionBtn if still on redirect page
+        for _ in range(3):
+            cur = driver.current_url
+            if "cdn/ziptron" in cur or "multiquality" in cur:
+                break
+            try:
+                btn = driver.find_element(By.ID, "mainActionBtn")
+                href = btn.get_attribute("href") or ""
+                if href.startswith("http") and "javascript" not in href.lower():
+                    await asyncio.to_thread(driver.get, href)
+                    await asyncio.sleep(6)
+                    continue
+            except Exception:
+                pass
+            break
+
+        final_page_url = driver.current_url
         ua = driver.execute_script("return navigator.userAgent")
         cookies = driver.get_cookies()
+
         cookie_file = os.path.join(task.directory, "cookies.txt")
+        cookie_header = "; ".join(f"{c.get('name')}={c.get('value')}" for c in cookies if c.get("name"))
         with open(cookie_file, "w") as cf:
             cf.write("# Netscape HTTP Cookie File\n")
             for c in cookies:
                 dom = c.get("domain", "")
                 if not dom.startswith("."):
                     dom = "." + dom
-                cf.write(f"{dom}\tTRUE\t{c.get('path', '/')}\t{'TRUE' if c.get('secure') else 'FALSE'}\t{int(c.get('expiry', time.time() + 3600))}\t{c.get('name', '')}\t{c.get('value', '')}\n")
+                cf.write(
+                    f"{dom}\tTRUE\t{c.get('path', '/')}\t"
+                    f"{'TRUE' if c.get('secure') else 'FALSE'}\t"
+                    f"{int(c.get('expiry', time.time() + 3600))}\t"
+                    f"{c.get('name', '')}\t{c.get('value', '')}\n"
+                )
 
         found = {}
-        for a in driver.find_elements(By.TAG_NAME, "a"):
-            href = a.get_attribute("href") or ""
-            txt = (a.text or "").lower() + " " + href.lower()
-            if not href or "javascript" in href.lower():
-                continue
-            for q in ["360p", "480p", "720p", "1080p"]:
-                if q[:-1] in txt and q not in found:
-                    found[q] = href
+
+        def _scan_links():
+            for a in driver.find_elements(By.TAG_NAME, "a"):
+                try:
+                    href = a.get_attribute("href") or ""
+                    txt = (a.text or "").lower() + " " + href.lower()
+                    if not href.startswith("http") or "javascript" in href.lower():
+                        continue
+                    if any(skip in href.lower() for skip in ("rareanimes.", "raretoonsindia.", "t.me/")):
+                        continue
+                    for q in ["360p", "480p", "720p", "1080p"]:
+                        if q[:-1] in txt and q not in found:
+                            found[q] = href
+                except Exception:
+                    pass
+
+        # 1. Scan main page
+        _scan_links()
+
+        # 2. Scan all iframes
+        try:
+            iframes = driver.find_elements(By.TAG_NAME, "iframe")
+            for iframe in iframes:
+                try:
+                    driver.switch_to.frame(iframe)
+                    await asyncio.sleep(1.5)
+                    _scan_links()
+                    driver.switch_to.default_content()
+                except Exception:
+                    driver.switch_to.default_content()
+        except Exception:
+            pass
 
         driver.quit()
         driver = None
 
+        if not found:
+            task.last_error = f"Page opened ({final_page_url[:45]}...) but no 360p/480p/720p/1080p links found."
+            return []
+
+        has_aria2 = bool(shutil.which("aria2c"))
         conns = "4" if IS_RENDER else "8"
+
         for q in ["360p", "480p", "720p", "1080p"]:
             if q not in found or task.cancelled:
                 continue
-            before = set(os.listdir(task.directory))
-            cmd = [
-                "aria2c", "-x", conns, "-s", conns, "-k", "1M", "-d", task.directory,
-                "--load-cookies", cookie_file, "--user-agent", ua, "--referer", swift_url,
-                "--check-certificate=false", "--console-log-level=warn", "--file-allocation=none",
-                found[q],
-            ]
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-            task.active_process = proc
-            await proc.wait()
-            task.active_process = None
-            if proc.returncode == 0:
-                for fname in (set(os.listdir(task.directory)) - before):
-                    if not fname.endswith(".aria2") and fname != "cookies.txt":
-                        fpath = os.path.join(task.directory, fname)
-                        if os.path.getsize(fpath) > 10240:
-                            files.append(ensure_mp4_extension(fpath))
+
+            dl_url = found[q]
+            got_file = None
+
+            # Method A: Aria2 (if installed)
+            if has_aria2:
+                before = set(os.listdir(task.directory))
+                cmd = [
+                    "aria2c", "-x", conns, "-s", conns, "-k", "1M", "-d", task.directory,
+                    "--load-cookies", cookie_file, "--user-agent", ua, "--referer", final_page_url,
+                    "--check-certificate=false", "--console-log-level=warn", "--file-allocation=none",
+                    dl_url,
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+                )
+                task.active_process = proc
+                await proc.wait()
+                task.active_process = None
+                if proc.returncode == 0:
+                    for fname in (set(os.listdir(task.directory)) - before):
+                        if not fname.endswith(".aria2") and fname != "cookies.txt":
+                            fpath = os.path.join(task.directory, fname)
+                            if os.path.getsize(fpath) > 10240:
+                                got_file = ensure_mp4_extension(fpath)
+                                break
+
+            # Method B: aiohttp fallback
+            if not got_file:
+                try:
+                    dl_headers = {"User-Agent": ua, "Referer": final_page_url}
+                    if cookie_header:
+                        dl_headers["Cookie"] = cookie_header
+                    async with aiohttp.ClientSession(headers=dl_headers) as session:
+                        async with session.get(dl_url, timeout=300, ssl=False) as resp:
+                            if resp.status == 200:
+                                safe_title = re.sub(r"[^a-zA-Z0-9 _-]", "", task.series_name).strip() or "Anime"
+                                save_path = os.path.join(task.directory, f"{safe_title}_Ep{task.episode}_{q}.mp4")
+                                with open(save_path, "wb") as f:
+                                    async for chunk in resp.content.iter_chunked(256 * 1024):
+                                        if task.cancelled:
+                                            break
+                                        f.write(chunk)
+                                if os.path.exists(save_path) and os.path.getsize(save_path) > 102400:
+                                    got_file = save_path
+                except Exception as aio_err:
+                    task.last_error = f"Download fallback failed ({q}): {str(aio_err)[:80]}"
+
+            if got_file:
+                files.append(got_file)
+
+        if not files and not task.last_error:
+            task.last_error = "Links found, but server blocked download or returned empty file."
+
     except Exception as e:
+        task.last_error = str(e)[:120]
         print(f"[Aria2 Download Error] {e}")
     finally:
         if driver:
@@ -1066,7 +1183,7 @@ bot = Client(
     bot_token=BOT_TOKEN,
     sleep_threshold=60,
     workdir=SESSION_DIR,
-    in_memory=IS_RENDER,  # Avoids ephemeral SQLite locks on Render; persists on VPS
+    in_memory=IS_RENDER,
 )
 
 
@@ -1163,6 +1280,7 @@ async def upload_files_for_task(task: Task, st: Status):
 async def execute_single_task(task: Task, st: Status):
     try:
         task.status = "downloading"
+        task.last_error = ""
         _, site_data = detect_website(task.url)
         site_type = site_data.get("type") if site_data else "direct"
         files = []
@@ -1191,7 +1309,12 @@ async def execute_single_task(task: Task, st: Status):
             await st.update("<blockquote>❌ <b>Task Cancelled & Cleaned!</b></blockquote>", force=True)
             return False
         if not files:
-            await st.update("<blockquote>❌ <b>Download Failed:</b> No downloadable files extracted.</blockquote>", force=True)
+            reason = getattr(task, "last_error", "") or "No downloadable files extracted."
+            await st.update(
+                f"<blockquote>❌ <b>Download Failed</b></blockquote>\n"
+                f"<blockquote>🔍 <b>Reason:</b> <code>{_esc(reason)}</code></blockquote>",
+                force=True,
+            )
             return False
 
         task.files = files
@@ -1549,7 +1672,7 @@ async def cmd_batch(c, m):
     if len(m.command) < 3:
         return await send_colored_msg(m.chat.id, f"<blockquote>⚠️ Usage: <code>/batch URL 1-5</code> (Max {MAX_BATCH})</blockquote>", reply_to=m.id)
     url = m.command[1]
-    rng = re.search(r"(\d+)\s*(?:-|to)\s*(\d+)", " ".join(m.command[2:]), re.I)
+    rng = re.search(r"(\d+)\s*(?:-|to|\s)\s*(\d+)", " ".join(m.command[2:]), re.I)
     if not rng:
         return await send_colored_msg(m.chat.id, "<blockquote>❌ Invalid range. Example: <code>1-5</code></blockquote>", reply_to=m.id)
     start_ep, end_ep = sorted([int(rng.group(1)), int(rng.group(2))])
@@ -1595,8 +1718,9 @@ async def cmd_leech(c, m):
 
     fpath = await download_direct_aiohttp(url, t.directory, t, st)
     if not fpath:
+        reason = t.last_error or "Leech failed."
         t.cleanup()
-        return await st.update("<blockquote>❌ Leech failed.</blockquote>", force=True)
+        return await st.update(f"<blockquote>❌ <b>Leech Failed</b>\n🔍 <code>{_esc(reason)}</code></blockquote>", force=True)
 
     upload_list = [fpath]
     if extract and zipfile.is_zipfile(fpath):
@@ -1921,7 +2045,6 @@ async def main():
     batch_semaphore = asyncio.Semaphore(MAX_BATCH_WORKERS)
     queue_lock = asyncio.Lock()
 
-    # Bind HTTP port immediately if running on Render (or if PORT env var is set)
     web_runner = None
     if IS_RENDER or os.environ.get("PORT"):
         web_runner = await start_web_server()
