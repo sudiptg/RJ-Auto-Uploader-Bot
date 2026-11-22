@@ -1,5 +1,5 @@
 # =============================================================================
-# ⚡ FLYTON ANIME PRO BOT — UNIFIED RENDER + VPS EDITION (FULL FIXED CODE)
+# ⚡ FLYTON ANIME PRO BOT — UNIFIED RENDER + VPS EDITION (AUTO-CLICK FIXED)
 # =============================================================================
 import os
 import re
@@ -113,8 +113,8 @@ DEFAULT_WEBSITES = {
         "type": "gdflix_direct",
     },
     "swift": {
-        "patterns": ["swift.multiquality", "multiquality.click", "liptron"],
-        "name": "⚡ Swift Player",
+        "patterns": ["swift.multiquality", "multiquality.click", "liptron", "animetoonhindi.com"],
+        "name": "⚡ Swift / MultiQuality",
         "type": "swift_direct",
     },
     "codedew": {
@@ -524,7 +524,6 @@ def ensure_mp4_extension(filepath: str) -> str:
 def validate_video_file(path: str) -> bool:
     if not os.path.exists(path) or os.path.getsize(path) < 50 * 1024:
         return False
-    # Reject accidental HTML files saved with .mp4 extension
     try:
         with open(path, "rb") as f:
             head = f.read(256).lstrip().lower()
@@ -673,7 +672,7 @@ def get_driver():
     opts.add_argument("--disable-gpu")
     opts.add_argument("--disable-software-rasterizer")
     opts.add_argument("--disable-extensions")
-    opts.add_argument("--window-size=1280,720")
+    opts.add_argument("--window-size=1280,800")
     if IS_RENDER:
         opts.add_argument("--blink-settings=imagesEnabled=false")
         opts.add_argument("--js-flags=--max-old-space-size=256")
@@ -768,7 +767,7 @@ class Status:
 
 
 # =============================================================================
-# 8. MULTI-WEBSITE FINDERS & SMART DOWNLOADERS
+# 8. MULTI-WEBSITE FINDERS & SMART AUTO-CLICK DOWNLOADER
 # =============================================================================
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -842,7 +841,7 @@ class RareAnimesFinder:
 
             content = soup.find("div", class_="entry-content") or soup.find("article") or soup
             eps, seen = [], set()
-            keywords = ["watchmultiquality", "multiquality", "multquality", "codedew", "gdflix", "download"]
+            keywords = ["watchmultiquality", "multiquality", "multquality", "codedew", "gdflix", "zipper", "download"]
             for a in content.find_all("a", href=True):
                 href = urllib.parse.urljoin(url, a["href"].strip())
                 if not href.startswith("http") or any(x in href.lower() for x in ("t.me/", "telegram.", "facebook.", "instagram.", "#")):
@@ -939,7 +938,7 @@ class SmartCodedewResolver:
                         found = None
                         for a in soup.find_all("a", href=True):
                             h = urllib.parse.urljoin(current_url, a["href"])
-                            if "cdn/ziptron" in h or ("codedew.com" in h and h != current_url):
+                            if "cdn/ziptron" in h or "multiquality" in h or (("codedew.com" in h or "/zipper/" in h) and h != current_url):
                                 found = h
                                 break
                         if found:
@@ -951,9 +950,12 @@ class SmartCodedewResolver:
         return current_url
 
 
-async def download_direct_aiohttp(url: str, save_dir: str, task: Task, st: Status, custom_name: str = None):
+async def download_direct_aiohttp(url: str, save_dir: str, task: Task, st: Status, custom_name: str = None, extra_headers: dict = None):
     try:
-        async with aiohttp.ClientSession(headers=HEADERS) as session:
+        hdrs = dict(HEADERS)
+        if extra_headers:
+            hdrs.update(extra_headers)
+        async with aiohttp.ClientSession(headers=hdrs) as session:
             async with session.get(url, timeout=300, ssl=False) as resp:
                 resp.raise_for_status()
                 ctype = (resp.headers.get("content-type") or "").lower()
@@ -1029,9 +1031,26 @@ async def resolve_gdflix_and_download(gdflix_url: str, task: Task, st: Status):
     return None
 
 
+def _extract_url_from_element(el, base_url: str) -> str:
+    for attr in ("href", "data-url", "data-href", "data-link", "data-download", "data-src"):
+        val = (el.get_attribute(attr) or "").strip()
+        if val and not val.startswith("#") and "javascript:" not in val.lower():
+            if val.startswith("http"):
+                return val
+            if val.startswith("/"):
+                return urllib.parse.urljoin(base_url, val)
+    onclick = (el.get_attribute("onclick") or "").strip()
+    if onclick:
+        m = re.search(r"""['"](https?://[^'"]+)['"]""", onclick)
+        if m:
+            return m.group(1)
+    return ""
+
+
 async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> list:
     driver, files = None, []
     task.last_error = ""
+    clicked_btn_info = "None"
     try:
         try:
             driver = await asyncio.to_thread(get_driver)
@@ -1041,28 +1060,209 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
             return []
 
         await asyncio.to_thread(driver.get, swift_url)
-        await asyncio.sleep(7)
+        await asyncio.sleep(6)
 
-        # Follow codedew / redirect buttons up to 3 hops
+        # Follow zipper/codedew mainActionBtn redirects up to 3 hops
         for _ in range(3):
             cur = driver.current_url
-            if "cdn/ziptron" in cur or "multiquality" in cur:
+            if "cdn/ziptron" in cur or "/multiquality" in cur:
                 break
             try:
                 btn = driver.find_element(By.ID, "mainActionBtn")
                 href = btn.get_attribute("href") or ""
                 if href.startswith("http") and "javascript" not in href.lower():
                     await asyncio.to_thread(driver.get, href)
-                    await asyncio.sleep(6)
+                    await asyncio.sleep(5)
                     continue
             except Exception:
                 pass
             break
 
+        found = {}
+        gdflix_found = []
+
+        def _scan_current_dom(cur_url: str):
+            # Scan <a>, <button>, and elements with data-url / onclick
+            elements = driver.find_elements(By.CSS_SELECTOR, "a, button, [data-url], [data-href], [data-link], [onclick]")
+            for el in elements:
+                try:
+                    href = _extract_url_from_element(el, cur_url)
+                    if not href or href.rstrip("/") == cur_url.rstrip("/"):
+                        continue
+                    low_href = href.lower()
+                    if any(skip in low_href for skip in ("rareanimes.", "raretoonsindia.", "t.me/", "facebook.", "twitter.", "instagram.")):
+                        continue
+                    txt = (el.text or "").lower() + " " + low_href
+                    if "gdflix" in low_href and "/file/" in low_href:
+                        if href not in gdflix_found:
+                            gdflix_found.append(href)
+                    for q in ["360p", "480p", "720p", "1080p"]:
+                        if q[:-1] in txt and q not in found:
+                            found[q] = href
+                    # Catch direct download/ziptron links even if quality text is on parent
+                    if any(k in low_href for k in ("ziptron", "/download", ".mp4", ".mkv", "workers.dev", "r2.dev", "googleusercontent")):
+                        parent_txt = ""
+                        try:
+                            parent_txt = (el.find_element(By.XPATH, "..").text or "").lower()
+                        except Exception:
+                            pass
+                        combined = txt + " " + parent_txt
+                        matched_q = False
+                        for q in ["360p", "480p", "720p", "1080p"]:
+                            if q[:-1] in combined and q not in found:
+                                found[q] = href
+                                matched_q = True
+                        if not matched_q and "720p" not in found:
+                            found["720p"] = href
+                except Exception:
+                    pass
+
+            for tag_name in ("video", "source"):
+                for el in driver.find_elements(By.TAG_NAME, tag_name):
+                    try:
+                        src = el.get_attribute("src") or ""
+                        if src.startswith("http") and any(ext in src.lower() for ext in (".mp4", ".mkv")):
+                            found.setdefault("720p", src)
+                    except Exception:
+                        pass
+
+        async def _scan_all_frames():
+            cur_u = driver.current_url
+            _scan_current_dom(cur_u)
+            try:
+                iframes = driver.find_elements(By.TAG_NAME, "iframe")
+                for iframe in iframes:
+                    try:
+                        driver.switch_to.frame(iframe)
+                        await asyncio.sleep(1)
+                        _scan_current_dom(cur_u)
+                        driver.switch_to.default_content()
+                    except Exception:
+                        driver.switch_to.default_content()
+            except Exception:
+                pass
+
+        # Pass 1: Initial scan
+        await _scan_all_frames()
+
+        # Pass 2: AUTO-CLICK THE CLOUD DOWNLOAD BUTTON (e.g. "S1 E2" on animetoonhindi/multiquality)
+        if not found and not gdflix_found:
+            for click_attempt in range(2):
+                main_win = driver.current_window_handle
+                before_handles = set(driver.window_handles)
+                target_btn = None
+                best_score = 0
+
+                try:
+                    candidates = driver.find_elements(By.CSS_SELECTOR, "button, a, div[role='button'], [onclick]")
+                    for el in candidates:
+                        try:
+                            if not el.is_displayed():
+                                continue
+                            txt = (el.text or "").strip()
+                            low_txt = txt.lower()
+                            cls = (el.get_attribute("class") or "").lower()
+                            eid = (el.get_attribute("id") or "").lower()
+                            ih = (el.get_attribute("innerHTML") or "").lower()
+
+                            # Skip bottom nav / share / wishlist / report buttons
+                            if low_txt in ("home", "watchlist", "history", "cinema") or len(txt) > 50:
+                                continue
+
+                            score = 0
+                            # Exact match for S1 E2 / S01 E02 button with cloud icon
+                            if re.search(r"\bS\d+\s*E\d+\b", txt, re.I):
+                                score += 60
+                            if "download" in low_txt or "get link" in low_txt:
+                                score += 50
+                            if any(k in cls or k in eid for k in ("download", "dl-btn", "dl_btn", "cloud")):
+                                score += 45
+                            if any(k in ih for k in ("cloud", "fa-download", "download", "svg")):
+                                score += 25
+                            if el.tag_name.lower() in ("button", "a") and score > 0:
+                                score += 10
+
+                            if score > best_score:
+                                best_score = score
+                                target_btn = el
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+                if target_btn and best_score >= 45:
+                    clicked_btn_info = (target_btn.text or target_btn.get_attribute("id") or target_btn.get_attribute("class") or "DownloadBtn").strip()[:35]
+                    print(f"   🖱️ Auto-clicking download button: '{clicked_btn_info}' (score={best_score})")
+                    try:
+                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target_btn)
+                        await asyncio.sleep(0.5)
+                        driver.execute_script("arguments[0].click();", target_btn)
+                    except Exception:
+                        try:
+                            target_btn.click()
+                        except Exception:
+                            pass
+
+                    await asyncio.sleep(4)
+
+                    # Handle new tab / popup ad vs real download page
+                    new_handles = set(driver.window_handles) - before_handles
+                    if new_handles:
+                        new_tab = list(new_handles)[0]
+                        driver.switch_to.window(new_tab)
+                        await asyncio.sleep(3)
+                        new_url = (driver.current_url or "").lower()
+                        is_valid_tab = any(
+                            k in new_url
+                            for k in ("animetoon", "multiquality", "ziptron", "zipper", "codedew", "gdflix", "download", "ddstream", "workers.dev", "r2.dev")
+                        )
+                        if not is_valid_tab:
+                            # Likely a popunder ad tab -> close it and click button again
+                            try:
+                                driver.close()
+                            except Exception:
+                                pass
+                            driver.switch_to.window(main_win)
+                            await asyncio.sleep(1)
+                            continue
+
+                    # If clicking redirected to another zipper/codedew page, follow mainActionBtn
+                    for _ in range(2):
+                        try:
+                            btn = driver.find_element(By.ID, "mainActionBtn")
+                            href = btn.get_attribute("href") or ""
+                            if href.startswith("http") and "javascript" not in href.lower():
+                                await asyncio.to_thread(driver.get, href)
+                                await asyncio.sleep(5)
+                                continue
+                        except Exception:
+                            pass
+                        break
+
+                    await _scan_all_frames()
+                    if found or gdflix_found:
+                        break
+                else:
+                    break
+
+        # Pass 3: Regex scan on final page_source for direct video/ziptron/gdflix URLs if still empty
         final_page_url = driver.current_url
+        if not found and not gdflix_found:
+            src_html = driver.page_source or ""
+            for gf in re.findall(r"https?://[^\"'\s<>]*gdflix\.[^\"'\s<>]+/file/[^\"'\s<>]+", src_html, re.I):
+                if gf not in gdflix_found:
+                    gdflix_found.append(gf)
+            for dl_match in re.findall(r"https?://[^\"'\s<>]+(?:\.mp4|\.mkv|ziptron\.php[^\"'\s<>]*|workers\.dev/[^\"'\s<>]+|r2\.dev/[^\"'\s<>]+)", src_html, re.I):
+                low_m = dl_match.lower()
+                for q in ["1080p", "720p", "480p", "360p"]:
+                    if q[:-1] in low_m and q not in found:
+                        found[q] = dl_match
+                        break
+                else:
+                    found.setdefault("720p", dl_match)
+
         ua = driver.execute_script("return navigator.userAgent")
         cookies = driver.get_cookies()
-
         cookie_file = os.path.join(task.directory, "cookies.txt")
         cookie_header = "; ".join(f"{c.get('name')}={c.get('value')}" for c in cookies if c.get("name"))
         with open(cookie_file, "w") as cf:
@@ -1078,58 +1278,10 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
                     f"{c.get('name', '')}\t{c.get('value', '')}\n"
                 )
 
-        found = {}
-        gdflix_found = []
-
-        def _scan_links():
-            for a in driver.find_elements(By.TAG_NAME, "a"):
-                try:
-                    href = a.get_attribute("href") or ""
-                    txt = (a.text or "").lower() + " " + href.lower()
-                    if not href.startswith("http") or "javascript" in href.lower():
-                        continue
-                    if any(skip in href.lower() for skip in ("rareanimes.", "raretoonsindia.", "t.me/")):
-                        continue
-                    if "gdflix" in href.lower() and "/file/" in href.lower():
-                        if href not in gdflix_found:
-                            gdflix_found.append(href)
-                    for q in ["360p", "480p", "720p", "1080p"]:
-                        if q[:-1] in txt and q not in found:
-                            found[q] = href
-                except Exception:
-                    pass
-
-            # Also check direct <video>/<source> tags
-            for tag_name in ("video", "source"):
-                for el in driver.find_elements(By.TAG_NAME, tag_name):
-                    try:
-                        src = el.get_attribute("src") or ""
-                        if src.startswith("http") and any(ext in src.lower() for ext in (".mp4", ".mkv")):
-                            found.setdefault("720p", src)
-                    except Exception:
-                        pass
-
-        # 1. Scan main page
-        _scan_links()
-
-        # 2. Scan all iframes
-        try:
-            iframes = driver.find_elements(By.TAG_NAME, "iframe")
-            for iframe in iframes:
-                try:
-                    driver.switch_to.frame(iframe)
-                    await asyncio.sleep(1.5)
-                    _scan_links()
-                    driver.switch_to.default_content()
-                except Exception:
-                    driver.switch_to.default_content()
-        except Exception:
-            pass
-
         driver.quit()
         driver = None
 
-        # If GDFlix links were found inside the page, try resolving them directly
+        # Resolve GDFlix mirrors if discovered
         if not found and gdflix_found:
             for gf_url in gdflix_found[:3]:
                 res = await resolve_gdflix_and_download(gf_url, task, st)
@@ -1140,9 +1292,9 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
 
         if not found:
             task.last_error = (
-                f"No video links found.\n"
-                f"• Opened: {swift_url[:70]}\n"
-                f"• Landed: {final_page_url[:70]}"
+                f"No video links found after click.\n"
+                f"• Clicked: {clicked_btn_info}\n"
+                f"• Landed: {final_page_url[:75]}"
             )
             return []
 
@@ -1154,6 +1306,17 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
                 continue
 
             dl_url = found[q]
+
+            # If quality link itself points to GDFlix or zipper, resolve it first
+            if "gdflix" in dl_url.lower() and "/file/" in dl_url.lower():
+                gf_res = await resolve_gdflix_and_download(dl_url, task, st)
+                if gf_res:
+                    files.append(ensure_mp4_extension(gf_res))
+                continue
+
+            if "codedew" in dl_url.lower() or "/zipper/" in dl_url.lower():
+                dl_url = await SmartCodedewResolver().resolve(dl_url)
+
             got_file = None
 
             if has_aria2:
@@ -1179,32 +1342,27 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
                                 break
 
             if not got_file:
-                try:
-                    dl_headers = {"User-Agent": ua, "Referer": final_page_url}
-                    if cookie_header:
-                        dl_headers["Cookie"] = cookie_header
-                    async with aiohttp.ClientSession(headers=dl_headers) as session:
-                        async with session.get(dl_url, timeout=300, ssl=False) as resp:
-                            ctype = (resp.headers.get("content-type") or "").lower()
-                            if resp.status == 200 and "text/html" not in ctype:
-                                safe_title = re.sub(r"[^a-zA-Z0-9 _-]", "", task.series_name).strip() or "Anime"
-                                save_path = os.path.join(task.directory, f"{safe_title}_Ep{task.episode}_{q}.mp4")
-                                with open(save_path, "wb") as f:
-                                    async for chunk in resp.content.iter_chunked(256 * 1024):
-                                        if task.cancelled:
-                                            break
-                                        f.write(chunk)
-                                if validate_video_file(save_path):
-                                    got_file = save_path
-                except Exception as aio_err:
-                    task.last_error = f"Download fallback failed ({q}): {str(aio_err)[:80]}"
+                safe_title = re.sub(r"[^a-zA-Z0-9 _-]", "", task.series_name).strip() or "Anime"
+                extra_h = {"User-Agent": ua, "Referer": final_page_url}
+                if cookie_header:
+                    extra_h["Cookie"] = cookie_header
+                got_file = await download_direct_aiohttp(
+                    dl_url,
+                    task.directory,
+                    task,
+                    st,
+                    custom_name=f"{safe_title}_Ep{task.episode}_{q}.mp4",
+                    extra_headers=extra_h,
+                )
+                if got_file and not validate_video_file(got_file):
+                    got_file = None
 
             if got_file:
                 files.append(got_file)
 
         if not files and not task.last_error:
-            sample_link = next(iter(found.values()))[:70]
-            task.last_error = f"Links found ({sample_link}) but server returned HTML or blocked download."
+            sample_link = next(iter(found.values()))[:75]
+            task.last_error = f"Clicked ({clicked_btn_info}) -> Found link ({sample_link}) but server returned HTML/blocked."
 
     except Exception as e:
         task.last_error = str(e)[:120]
@@ -1341,12 +1499,11 @@ async def execute_single_task(task: Task, st: Status):
                 if f:
                     files.append(ensure_mp4_extension(f))
                 else:
-                    # Fallback to browser scan if direct GDFlix failed
                     files = await download_swift_with_aria2(task.url, task, st)
 
         elif site_type in ("codedew", "codedew_direct", "rareanimes", "swift_direct") or task.force_browser:
             target_url = task.url
-            if "codedew" in target_url.lower():
+            if "codedew" in target_url.lower() or "/zipper/" in target_url.lower():
                 target_url = await SmartCodedewResolver().resolve(target_url)
             files = await download_swift_with_aria2(target_url, task, st)
 
@@ -1355,7 +1512,6 @@ async def execute_single_task(task: Task, st: Status):
             if f:
                 files.append(ensure_mp4_extension(f) if validate_video_file(f) else f)
             elif task.last_error == "HTML_PAGE":
-                # Auto-switch to Chromium if URL turned out to be a webpage
                 files = await download_swift_with_aria2(task.url, task, st)
 
         if task.cancelled:
@@ -2079,7 +2235,7 @@ async def auto_url_handler(c, m):
 
     t = Task(m.from_user.id, m.chat.id, "single", target_url)
     t.series_name, t.episode, t.episode_data = title or "Anime Download", ep_num or 1, ep_data
-    t.force_browser = site_key in ("rareanimes", "toono")
+    t.force_browser = site_key in ("rareanimes", "toono", "swift")
     task_queue.append({"type": "single", "task": t, "status": st})
     await st.update(
         f"<blockquote>📥 <b>ADDED TO QUEUE (#{len(task_queue)})</b></blockquote>\n"
