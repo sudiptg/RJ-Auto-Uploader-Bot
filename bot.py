@@ -1,5 +1,5 @@
 # =============================================================================
-# ⚡ FLYTON ANIME PRO BOT — UNIFIED RENDER + VPS EDITION (FULL UPDATED CODE)
+# ⚡ FLYTON ANIME PRO BOT — UNIFIED RENDER + VPS EDITION (FULL FIXED CODE)
 # =============================================================================
 import os
 import re
@@ -74,7 +74,6 @@ for _d in [DOWNLOAD_DIR, THUMB_DIR, DB_DIR, WORKER_DIR, BACKUP_DIR, SESSION_DIR]
 
 DB_FILE = os.path.join(DB_DIR, "main_db.pkl")
 
-# Smart Default Limits: 1 worker on Render (512MB RAM), 4 workers on VPS
 MAX_BATCH = 15
 MAX_QUEUE = 100
 MAX_DOWNLOAD_WORKERS = int(os.environ.get("MAX_DOWNLOAD_WORKERS", "1" if IS_RENDER else "4"))
@@ -109,7 +108,7 @@ DEFAULT_WEBSITES = {
         "type": "gdflix",
     },
     "gdflix": {
-        "patterns": ["gdflix.dev", "gdflix.app", "gdflix.cfd"],
+        "patterns": ["gdflix.dev", "gdflix.app", "gdflix.cfd", "gdflix.dad", "gdflix.ink"],
         "name": "📦 GDFlix",
         "type": "gdflix_direct",
     },
@@ -126,7 +125,7 @@ DEFAULT_WEBSITES = {
 }
 
 GDFLIX_INTERMEDIATE_PATTERNS = [
-    r"gdflix\.(app|dev|cfd)/zfile",
+    r"gdflix\.[a-z]+/zfile",
     r"instant\.busycdn\.xyz",
 ]
 
@@ -217,7 +216,7 @@ def _esc(val) -> str:
 
 
 # =============================================================================
-# 3. RENDER WEB HEALTH SERVER (RUNS AUTOMATICALLY ON RENDER OR WHEN PORT IS SET)
+# 3. RENDER WEB HEALTH SERVER
 # =============================================================================
 async def start_web_server():
     app = web.Application()
@@ -250,7 +249,7 @@ async def start_web_server():
 
 
 # =============================================================================
-# 4. COLORFUL BUTTON ENGINE (BLUE / GREEN / RED WITH SAFE FALLBACK)
+# 4. COLORFUL BUTTON ENGINE
 # =============================================================================
 async def tg_api_request(method: str, payload: dict) -> dict:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
@@ -523,9 +522,17 @@ def ensure_mp4_extension(filepath: str) -> str:
 
 
 def validate_video_file(path: str) -> bool:
-    return os.path.exists(path) and os.path.getsize(path) > 10240 and path.lower().endswith(
-        (".mp4", ".mkv", ".avi", ".webm", ".mov")
-    )
+    if not os.path.exists(path) or os.path.getsize(path) < 50 * 1024:
+        return False
+    # Reject accidental HTML files saved with .mp4 extension
+    try:
+        with open(path, "rb") as f:
+            head = f.read(256).lstrip().lower()
+            if head.startswith((b"<!doctype", b"<html", b"<head", b"<script")):
+                return False
+    except Exception:
+        return False
+    return path.lower().endswith((".mp4", ".mkv", ".avi", ".webm", ".mov"))
 
 
 async def filter_audio_tracks(input_path: str, languages: str, output_dir: str) -> str:
@@ -656,7 +663,7 @@ def smart_thumb_match(anime_name: str, user_thumbs: dict):
 
 
 # =============================================================================
-# 7. DUAL CHROME / CHROMIUM DRIVER (WORKS ON RENDER DOCKER & UBUNTU VPS)
+# 7. DUAL CHROME / CHROMIUM DRIVER (RENDER DOCKER + UBUNTU VPS)
 # =============================================================================
 def get_driver():
     opts = Options()
@@ -715,6 +722,7 @@ class Task:
         self.season = 1
         self.episode = 1
         self.episode_data = None
+        self.force_browser = False
         self.cancelled = False
         self.active_process = None
         self.last_error = ""
@@ -760,7 +768,7 @@ class Status:
 
 
 # =============================================================================
-# 8. MULTI-WEBSITE FINDERS & NON-BLOCKING DOWNLOADERS
+# 8. MULTI-WEBSITE FINDERS & SMART DOWNLOADERS
 # =============================================================================
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -834,14 +842,16 @@ class RareAnimesFinder:
 
             content = soup.find("div", class_="entry-content") or soup.find("article") or soup
             eps, seen = [], set()
-            keywords = ["watchmultiquality", "multiquality", "multquality", "codedew"]
+            keywords = ["watchmultiquality", "multiquality", "multquality", "codedew", "gdflix", "download"]
             for a in content.find_all("a", href=True):
-                href = a["href"]
+                href = urllib.parse.urljoin(url, a["href"].strip())
+                if not href.startswith("http") or any(x in href.lower() for x in ("t.me/", "telegram.", "facebook.", "instagram.", "#")):
+                    continue
                 txt = a.get_text(" ", strip=True)
                 clean_txt = re.sub(r"[\s_-]+", "", txt.lower())
                 if any(k in clean_txt or k in href.lower() for k in keywords) and href not in seen:
                     seen.add(href)
-                    ep_m = re.search(r"(?:episode|ep|e)[\s_-]*0?(\d+)", txt, re.I)
+                    ep_m = re.search(r"(?:episode|ep|e)[\s_-]*0?(\d+)", txt + " " + href, re.I)
                     ep_num = int(ep_m.group(1)) if ep_m else (len(eps) + 1)
                     eps.append((season, ep_num, href))
             if not eps:
@@ -946,6 +956,11 @@ async def download_direct_aiohttp(url: str, save_dir: str, task: Task, st: Statu
         async with aiohttp.ClientSession(headers=HEADERS) as session:
             async with session.get(url, timeout=300, ssl=False) as resp:
                 resp.raise_for_status()
+                ctype = (resp.headers.get("content-type") or "").lower()
+                if "text/html" in ctype:
+                    task.last_error = "HTML_PAGE"
+                    return None
+
                 filename = custom_name
                 if not filename and "content-disposition" in resp.headers:
                     m = re.findall(r"filename\*?=([^;]+)", resp.headers["content-disposition"], re.I)
@@ -977,7 +992,10 @@ async def download_direct_aiohttp(url: str, save_dir: str, task: Task, st: Statu
                                 f"⚡ <code>{fmt_bytes(speed)}/s</code> | ⏱ <code>{fmt_time(eta)}</code>\n"
                                 f"❌ Cancel: <code>/cancel {task.cancel_id}</code></blockquote>"
                             )
-                return save_path if os.path.exists(save_path) and os.path.getsize(save_path) > 1024 else None
+                if os.path.exists(save_path) and os.path.getsize(save_path) > 1024:
+                    return save_path
+                task.last_error = f"Empty response ({downloaded} bytes) from {url[:60]}"
+                return None
     except Exception as e:
         task.last_error = f"Direct download error: {str(e)[:90]}"
         print(f"[Direct Download Error] {e}")
@@ -987,7 +1005,7 @@ async def download_direct_aiohttp(url: str, save_dir: str, task: Task, st: Statu
 async def resolve_gdflix_and_download(gdflix_url: str, task: Task, st: Status):
     soup = await fetch_soup(gdflix_url)
     if not soup:
-        task.last_error = "GDFlix page could not be loaded."
+        task.last_error = f"GDFlix page failed to load: {gdflix_url[:55]}"
         return None
     links = []
     for a in soup.find_all("a", href=True):
@@ -1006,8 +1024,8 @@ async def resolve_gdflix_and_download(gdflix_url: str, task: Task, st: Status):
         res = await download_direct_aiohttp(link, task.directory, task, st)
         if res and os.path.getsize(res) > 5 * 1024 * 1024:
             return res
-    if not task.last_error:
-        task.last_error = "No working mirror found on GDFlix."
+    if not task.last_error or task.last_error == "HTML_PAGE":
+        task.last_error = f"No working mirror found on GDFlix ({gdflix_url[:55]})"
     return None
 
 
@@ -1025,7 +1043,7 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
         await asyncio.to_thread(driver.get, swift_url)
         await asyncio.sleep(7)
 
-        # Follow codedew mainActionBtn if still on redirect page
+        # Follow codedew / redirect buttons up to 3 hops
         for _ in range(3):
             cur = driver.current_url
             if "cdn/ziptron" in cur or "multiquality" in cur:
@@ -1061,6 +1079,7 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
                 )
 
         found = {}
+        gdflix_found = []
 
         def _scan_links():
             for a in driver.find_elements(By.TAG_NAME, "a"):
@@ -1071,11 +1090,24 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
                         continue
                     if any(skip in href.lower() for skip in ("rareanimes.", "raretoonsindia.", "t.me/")):
                         continue
+                    if "gdflix" in href.lower() and "/file/" in href.lower():
+                        if href not in gdflix_found:
+                            gdflix_found.append(href)
                     for q in ["360p", "480p", "720p", "1080p"]:
                         if q[:-1] in txt and q not in found:
                             found[q] = href
                 except Exception:
                     pass
+
+            # Also check direct <video>/<source> tags
+            for tag_name in ("video", "source"):
+                for el in driver.find_elements(By.TAG_NAME, tag_name):
+                    try:
+                        src = el.get_attribute("src") or ""
+                        if src.startswith("http") and any(ext in src.lower() for ext in (".mp4", ".mkv")):
+                            found.setdefault("720p", src)
+                    except Exception:
+                        pass
 
         # 1. Scan main page
         _scan_links()
@@ -1097,8 +1129,21 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
         driver.quit()
         driver = None
 
+        # If GDFlix links were found inside the page, try resolving them directly
+        if not found and gdflix_found:
+            for gf_url in gdflix_found[:3]:
+                res = await resolve_gdflix_and_download(gf_url, task, st)
+                if res:
+                    files.append(ensure_mp4_extension(res))
+            if files:
+                return files
+
         if not found:
-            task.last_error = f"Page opened ({final_page_url[:45]}...) but no 360p/480p/720p/1080p links found."
+            task.last_error = (
+                f"No video links found.\n"
+                f"• Opened: {swift_url[:70]}\n"
+                f"• Landed: {final_page_url[:70]}"
+            )
             return []
 
         has_aria2 = bool(shutil.which("aria2c"))
@@ -1111,7 +1156,6 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
             dl_url = found[q]
             got_file = None
 
-            # Method A: Aria2 (if installed)
             if has_aria2:
                 before = set(os.listdir(task.directory))
                 cmd = [
@@ -1130,11 +1174,10 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
                     for fname in (set(os.listdir(task.directory)) - before):
                         if not fname.endswith(".aria2") and fname != "cookies.txt":
                             fpath = os.path.join(task.directory, fname)
-                            if os.path.getsize(fpath) > 10240:
+                            if validate_video_file(fpath):
                                 got_file = ensure_mp4_extension(fpath)
                                 break
 
-            # Method B: aiohttp fallback
             if not got_file:
                 try:
                     dl_headers = {"User-Agent": ua, "Referer": final_page_url}
@@ -1142,7 +1185,8 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
                         dl_headers["Cookie"] = cookie_header
                     async with aiohttp.ClientSession(headers=dl_headers) as session:
                         async with session.get(dl_url, timeout=300, ssl=False) as resp:
-                            if resp.status == 200:
+                            ctype = (resp.headers.get("content-type") or "").lower()
+                            if resp.status == 200 and "text/html" not in ctype:
                                 safe_title = re.sub(r"[^a-zA-Z0-9 _-]", "", task.series_name).strip() or "Anime"
                                 save_path = os.path.join(task.directory, f"{safe_title}_Ep{task.episode}_{q}.mp4")
                                 with open(save_path, "wb") as f:
@@ -1150,7 +1194,7 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
                                         if task.cancelled:
                                             break
                                         f.write(chunk)
-                                if os.path.exists(save_path) and os.path.getsize(save_path) > 102400:
+                                if validate_video_file(save_path):
                                     got_file = save_path
                 except Exception as aio_err:
                     task.last_error = f"Download fallback failed ({q}): {str(aio_err)[:80]}"
@@ -1159,7 +1203,8 @@ async def download_swift_with_aria2(swift_url: str, task: Task, st: Status) -> l
                 files.append(got_file)
 
         if not files and not task.last_error:
-            task.last_error = "Links found, but server blocked download or returned empty file."
+            sample_link = next(iter(found.values()))[:70]
+            task.last_error = f"Links found ({sample_link}) but server returned HTML or blocked download."
 
     except Exception as e:
         task.last_error = str(e)[:120]
@@ -1286,30 +1331,38 @@ async def execute_single_task(task: Task, st: Status):
         files = []
 
         if site_type in ("gdflix", "gdflix_direct"):
-            if "/file/" in task.url:
-                f = await resolve_gdflix_and_download(task.url, task, st)
-                if f:
-                    files.append(ensure_mp4_extension(f))
-            elif task.episode_data:
+            if task.episode_data and task.episode_data.get("qualities"):
                 for _, q_url in task.episode_data.get("qualities", {}).items():
                     f = await resolve_gdflix_and_download(q_url, task, st)
                     if f:
                         files.append(ensure_mp4_extension(f))
-        elif site_type in ("codedew", "codedew_direct", "rareanimes", "swift_direct"):
+            else:
+                f = await resolve_gdflix_and_download(task.url, task, st)
+                if f:
+                    files.append(ensure_mp4_extension(f))
+                else:
+                    # Fallback to browser scan if direct GDFlix failed
+                    files = await download_swift_with_aria2(task.url, task, st)
+
+        elif site_type in ("codedew", "codedew_direct", "rareanimes", "swift_direct") or task.force_browser:
             target_url = task.url
             if "codedew" in target_url.lower():
                 target_url = await SmartCodedewResolver().resolve(target_url)
             files = await download_swift_with_aria2(target_url, task, st)
+
         else:
             f = await download_direct_aiohttp(task.url, task.directory, task, st)
             if f:
                 files.append(ensure_mp4_extension(f) if validate_video_file(f) else f)
+            elif task.last_error == "HTML_PAGE":
+                # Auto-switch to Chromium if URL turned out to be a webpage
+                files = await download_swift_with_aria2(task.url, task, st)
 
         if task.cancelled:
             await st.update("<blockquote>❌ <b>Task Cancelled & Cleaned!</b></blockquote>", force=True)
             return False
         if not files:
-            reason = getattr(task, "last_error", "") or "No downloadable files extracted."
+            reason = getattr(task, "last_error", "") or f"No downloadable files extracted from {task.url[:70]}"
             await st.update(
                 f"<blockquote>❌ <b>Download Failed</b></blockquote>\n"
                 f"<blockquote>🔍 <b>Reason:</b> <code>{_esc(reason)}</code></blockquote>",
@@ -1358,6 +1411,7 @@ async def download_worker(wid: int):
                             break
                         ep_task = Task(task.user_id, task.chat_id, "episode", ep_target if isinstance(ep_target, str) else task.url)
                         ep_task.series_name, ep_task.episode = task.series_name, ep_num
+                        ep_task.force_browser = task.force_browser
                         if isinstance(ep_target, dict):
                             ep_task.episode_data = ep_target
                         await item["status"].update(
@@ -1408,6 +1462,7 @@ async def monitor_loop():
                         for sub in data.get("subscribers", []):
                             t = Task(sub["user_id"], sub["chat_id"], "episode", ep_url)
                             t.series_name, t.episode, t.episode_data = data["series_name"], ep_num, ep_data
+                            t.force_browser = site_key in ("rareanimes", "toono")
                             st = Status(bot, sub["chat_id"])
                             await st.create(f"<blockquote>📥 <b>Auto-Queued Episode {ep_num}...</b></blockquote>")
                             task_queue.append({"type": "single", "task": t, "status": st})
@@ -1633,6 +1688,7 @@ async def cmd_set(c, m):
     if ep_url or ep_data:
         t = Task(m.from_user.id, m.chat.id, "episode", ep_url or url)
         t.series_name, t.episode, t.episode_data = title, latest_ep, ep_data
+        t.force_browser = site_key in ("rareanimes", "toono")
         task_queue.append({"type": "single", "task": t, "status": st})
 
 
@@ -1697,6 +1753,7 @@ async def cmd_batch(c, m):
         return await st.update("<blockquote>❌ Requested episodes not found.</blockquote>", force=True)
     t = Task(m.from_user.id, m.chat.id, "batch", url)
     t.series_name = title or "Batch Anime"
+    t.force_browser = site_key in ("rareanimes", "toono")
     task_queue.append({"type": "batch", "task": t, "status": st, "episodes": dl_eps})
     await st.update(f"<blockquote>✅ Batch Queued: <b>{_esc(t.series_name)}</b> ({len(dl_eps)} eps)</blockquote>", force=True)
 
@@ -1906,7 +1963,7 @@ async def cmd_backup(c, m):
     target = BACKUP_CHANNEL or m.chat.id
     if os.path.exists(DB_FILE):
         await c.send_document(target, DB_FILE, caption=f"📦 <b>{_esc(BRAND_NAME)} DB Backup</b> — {datetime.now().strftime('%d %b %Y %H:%M')}", parse_mode=ParseMode.HTML)
-        await send_colored_msg(m.chat.id, "<blockquote>✅ Backup sent! (Render रीस्टार्ट होने पर इस फाइल पर /restore रिप्लाई करके डेटा वापस ला सकते हो)</blockquote>", reply_to=m.id)
+        await send_colored_msg(m.chat.id, "<blockquote>✅ Backup sent!</blockquote>", reply_to=m.id)
 
 
 @bot.on_message(filters.command("restore") & filters.reply)
@@ -2022,6 +2079,7 @@ async def auto_url_handler(c, m):
 
     t = Task(m.from_user.id, m.chat.id, "single", target_url)
     t.series_name, t.episode, t.episode_data = title or "Anime Download", ep_num or 1, ep_data
+    t.force_browser = site_key in ("rareanimes", "toono")
     task_queue.append({"type": "single", "task": t, "status": st})
     await st.update(
         f"<blockquote>📥 <b>ADDED TO QUEUE (#{len(task_queue)})</b></blockquote>\n"
